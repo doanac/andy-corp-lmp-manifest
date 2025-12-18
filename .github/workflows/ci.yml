@@ -64,6 +64,14 @@ jobs:
           ostree_hash=$(cat ./deploy/images/${{env.HWID}}/ostree_repo/refs/heads/${{env.HWID}})
           ./fioctl-linux-amd64 --factory ${{env.FACTORY}} -t ${{secrets.FIO_TOKEN}} targets add --targets-creator "lmp-gh-pr-${{github.event.pull_request.number}}" --type ostree --tags prs --src-tag main ${{env.HWID}} ${ostree_hash} | tee target.log
 
+      - name: Save OSTree repo
+        run: |
+          set -eux
+          cd /tmp/oe/build
+          version=$(cat target.log  | grep version | cut -d: -f2 | cut -d\" -f2)
+          cd deploy/images/${{env.HWID}}
+          tar -czf /persistent/gh-${GITHUB_RUN_ID}-tgt-${version}_ostree.tgz ostree_repo
+
       - name: Upload Target log
         uses: actions/upload-artifact@v4
         with:
