@@ -1,0 +1,79 @@
+name: CI
+on:
+  pull_request:
+
+env:
+  FACTORY: andy-corp
+  HWID: intel-corei7-64
+
+jobs:
+  build:
+    name: Build Yocto
+    runs-on: self-hosted
+    container:
+      image: hub.foundries.io/lmp-sdk
+      volumes:
+        - /home/doanac/actions-runner/persistent:/persistent
+    steps:
+      - name: Setup repo
+        run: |
+          set -ex
+          env | sort
+          rm -rf repo
+          sudo -u builder git clone ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY} repo
+          cd repo
+          sudo -u builder git fetch origin ${GITHUB_REF}:pr
+          sudo -u builder git checkout pr
+          loc=$(pwd)
+
+          sudo -u builder mkdir /tmp/oe
+          cd /tmp/oe
+          sudo -u builder repo init -m ${{env.FACTORY}}.xml file://${loc}
+          sudo -u builder repo sync
+
+      - name: Set up cache
+        run: |
+          set -eux
+          cd /tmp/oe
+          mkdir -p /persistent/sstate-cache /persistent/downloads
+          chown builder /persistent/sstate-cache
+          chown builder /persistent/downloads
+          ln -s /persistent/sstate-cache ./
+          ln -s /persistent/downloads ./
+
+      - name: Build Yocto
+        run: |
+          set -eux
+          cd /tmp/oe
+          sudo -u builder bash -c "MACHINE=${{env.HWID}} source setup-environment build && bitbake lmp-factory-image"
+
+      - name: Push OSTree
+        run: |
+          set -eux
+          cd /tmp/oe/build
+          fiopush -factory ${{env.FACTORY}} -repo ./deploy/images/${{env.HWID}}/ostree_repo -token ${{secrets.FIO_TOKEN}}
+
+      - name: Create TUF Target
+        run: |
+          set -eux
+          cd /tmp/oe/build
+
+          wget https://github.com/foundriesio/fioctl/releases/download/v0.45/fioctl-linux-amd64
+          chmod +x fioctl-linux-amd64
+
+          ostree_hash=$(cat ./deploy/images/${{env.HWID}}/ostree_repo/refs/heads/${{env.HWID}})
+          ./fioctl-linux-amd64 --factory ${{env.FACTORY}} -t ${{secrets.FIO_TOKEN}} targets add --targets-creator "lmp-gh-pr-${{github.event.pull_request.number}}" --type ostree --tags prs --src-tag main ${{env.HWID}} ${ostree_hash} | tee target.log
+
+      - name: Save OSTree repo
+        run: |
+          set -eux
+          cd /tmp/oe/build
+          version=$(cat target.log  | grep version | cut -d: -f2 | cut -d\" -f2)
+          cd deploy/images/${{env.HWID}}
+          tar -czf /persistent/gh-${GITHUB_RUN_ID}-tgt-${version}_ostree.tgz ostree_repo
+
+      - name: Upload Target log
+        uses: actions/upload-artifact@v4
+        with:
+          name: target.log
+          path: /tmp/oe/build/target.log
